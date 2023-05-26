@@ -81,7 +81,7 @@ def mlp_architecture_ala_iclr_18(n_pc_points, bneck_size, dnum=3, bneck_post_mlp
                     'verbose': False,
                     'non_linearity':tf.nn.relu
                     }
-    if mode in ['fc','lae']:
+    if mode in ['ae','lae']:
         decoder = decoder_with_fc_only
         decoder_args = {'layer_sizes': [256,256, np.prod(n_input)],
                         'b_norm': False,
@@ -229,3 +229,60 @@ def pclossnet(scope,inpts,out,centype='lnsa',augment=True,BATCH_SIZE=16):
 
     return loss_e,loss_d_local
 
+#To extract and aggregate representations
+def ca_kernel(input_signal,n_filter=[64, 128, 128, 256, 128],activation_func=tf.nn.relu,pooling='maxmean',secword=None,normal=False):
+    encoder = encoder_with_convs_and_symmetry
+    enc_args = {'n_filters': n_filter,
+                    'filter_sizes': [1],
+                    'strides': [1],
+                    'b_norm': False,
+                    'verbose': True
+                    }
+    words=encoder(input_signal,n_filters=enc_args['n_filters'],filter_sizes=enc_args['filter_sizes'],symmetry=None,non_linearity=activation_func,strides=enc_args['strides'],b_norm=enc_args['b_norm'],verbose=enc_args['verbose'])
+    if pooling is 'max':
+        word=tf.reduce_max(words,axis=1)
+    elif pooling is 'maxmean':
+        maxword=tf.reduce_max(words,axis=1,keepdims=True)
+        meanword=tf.reduce_mean(words,axis=1,keepdims=True)
+        minword=tf.reduce_min(words,axis=1,keepdims=True)
+        if secword is None:
+            #secword=tf.square(word-meanword)/2
+            secword=tf.concat([maxword,meanword],axis=-1)
+            secword=tf.expand_dims(secword,axis=1)
+            for i,outchannel in enumerate([128,128]):
+                secword=conv2d('sec_state%d'%i,secword,outchannel,[1,1],padding='VALID',activation_func=tf.nn.leaky_relu)
+            secword=conv2d('sec_stateoutg',secword,maxword.get_shape()[-1].value,[1,1],padding='VALID',activation_func=None)
+            secword=tf.square(secword)
+            secword=tf.squeeze(secword,[1])
+        else:
+            luc,secword=secword
+        ws=tf.square(words-maxword)
+        cws=ws
+        luc=tf.reduce_mean(secword)
+        ws=tf.exp(-cws/(secword+1e-5))/tf.reduce_sum(tf.exp(-cws/(secword+1e-5)),axis=1,keepdims=True)
+        word=tf.reduce_sum(words*ws,axis=1)
+        return word, [luc,secword]
+    else:
+        word=tf.reduce_mean(words,axis=1)
+    maxword=tf.reduce_max(words,axis=1)
+    if normal:
+        word=word/(tf.reduce_sum(word,axis=-1,keepdims=True)+1e-5)
+    return word,maxword
+
+#To calculate loss
+def caloss(pointcloud_pl,posi_pl,out,args):
+    with tf.variable_scope('2ad'):
+        fi,mfi=ca_kernel(pointcloud_pl,n_filter=[64,128],activation_func=tf.nn.leaky_relu,pooling='maxmean')
+    with tf.variable_scope('2ad',reuse=True):
+        fr,mfr=ca_kernel(out,n_filter=[64,128],activation_func=tf.nn.leaky_relu,pooling='maxmean',secword=mfi)
+    with tf.variable_scope('2ad',reuse=True):
+        fp,mfp=ca_kernel(posi_pl,n_filter=[64,128],activation_func=tf.nn.leaky_relu,pooling='maxmean',secword=mfi)
+
+    loss_ri=tf.reduce_mean(tf.reduce_sum(tf.abs(fi-fr),axis=-1))
+    loss_pi=tf.reduce_mean(tf.reduce_sum(tf.abs(fp-fi),axis=-1,keepdims=True)/tf.reduce_mean(tf.abs(pointcloud_pl-posi_pl),axis=-1))
+    loss_pr=tf.reduce_mean(tf.reduce_sum(tf.abs(fp-fr),axis=-1))
+
+    loss_luc=mfi[0]
+    loss_d=-tf.log(loss_ri+1e-8)+args.wei_pi*loss_pi+args.wei_luc*loss_luc
+    loss_e=loss_ri
+    return loss_e, loss_d

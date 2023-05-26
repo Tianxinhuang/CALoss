@@ -15,11 +15,8 @@ from tf_ops.grouping import tf_grouping
 
 from lossnet import sampling,mlp_architecture_ala_iclr_18,local_kernel
 from provider import shuffle_points,jitter_point_cloud 
+import argparse
 
-DATA_DIR=getdata.getspdir()
-filelist=os.listdir(DATA_DIR)
-
-BATCH_SIZE=16
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
 def getnormal(data):
     pcd = o3d.geometry.PointCloud()
@@ -143,50 +140,41 @@ def get_normal(data,cir=True):
         #print(np.shape(para))
         result=np.expand_dims(para,axis=-1)*(data-cen)#+cen
     return result
-def train():
-    start=0
-    num=2048
-    bneck_size=128
-    n_pc_points=2048
-    bsize=8
-    k=1
-    mlp=[64,128]
-    mlp2=[128,128]
-    pointcloud_pl=tf.placeholder(tf.float32,[BATCH_SIZE,n_pc_points,3],name='pointcloud_pl')
-    posi_pl=tf.placeholder(tf.float32,[BATCH_SIZE,None,3],name='posi_pl')
+def evaluate(args):
+    num=args.ptnum
+    pointcloud_pl=tf.placeholder(tf.float32,[args.batch_size,args.ptnum,3],name='pointcloud_pl')
     in_pl=tf.placeholder(tf.float32,[1,None,3],name='in_pl')
     out_pl=tf.placeholder(tf.float32,[1,None,3],name='out_pl')
 
-    entype='pn'
-    dectype='fc'
+    enctype=args.enctype
+    dectype=args.dectype
     local=dectype in ['lae','lfd']
     global_step=tf.Variable(0,trainable=False)
-    encoder, decoder, enc_args, dec_args = mlp_architecture_ala_iclr_18(n_pc_points, bneck_size,mode=dectype)
+    encoder, decoder, enc_args, dec_args = mlp_architecture_ala_iclr_18(args.ptnum, args.bneck,mode=dectype)
     with tf.variable_scope('ge'):
         if not local:
-            if entype is 'dgcnn':
-                word=dgcnn_kernel(pointcloud_pl, is_training=tf.constant(True), bn_decay=None)
-            elif entype is 'pn2':
-                _,word=local_kernel(pointcloud_pl,local=local,cenlist=None,pooling='max')
+            if enctype is 'dgcnn':
+                word=dgcnn_kernel(pointcloud_pl, is_training=tf.constant(False), bn_decay=None)
+            elif enctype is 'pn2':
+                _,word=local_kernel(pointcloud_pl,local=local,cenlist=None,pooling='max',it=False)
             else:
                 word=encoder(pointcloud_pl,n_filters=enc_args['n_filters'],filter_sizes=enc_args['filter_sizes'],strides=enc_args['strides'],b_norm=enc_args['b_norm'],verbose=enc_args['verbose'])
+
             out=decoder(word,layer_sizes=dec_args['layer_sizes'],b_norm=dec_args['b_norm'],b_norm_finish=dec_args['b_norm_finish'],verbose=dec_args['verbose'])
             if dectype is 'fd':
-                #out=decoder(word,layer_sizes=dec_args['layer_sizes'],b_norm=dec_args['b_norm'],b_norm_finish=dec_args['b_norm_finish'],verbose=dec_args['verbose'])
                 out=tf.reshape(out,[-1,45*45,3])
-            elif dectype is 'fc':
-                #out=decoder(word,layer_sizes=dec_args['layer_sizes'],b_norm=dec_args['b_norm'],b_norm_finish=dec_args['b_norm_finish'],verbose=dec_args['verbose'])
-                out=tf.reshape(out,[-1,num,3])
+            elif dectype is 'ae':
+                out=tf.reshape(out,[-1,args.ptnum,3])
         else:
-            encoder, decoder, enc_args, dec_args = mlp_architecture_ala_iclr_18(n_pc_points//32, bneck_size,3,mode=dectype)
+            encoder, decoder, enc_args, dec_args = mlp_architecture_ala_iclr_18(args.ptnum//32, args.bneck,3,mode=dectype)
             with tf.variable_scope('ge'):
-                cens,feats=local_kernel(pointcloud_pl,local=local,pooling='max')
+                cens,feats=local_kernel(pointcloud_pl,local=local,pooling='max',it=False)
                 cennum=cens.get_shape()[1].value
                 outlist=[]
                 for i in range(cennum):
                     with tf.variable_scope('dec'+str(i)):
                         outi=tf.expand_dims(cens[:,i,:],axis=1)\
-                                +tf.reshape(decoder(feats[:,i,:],layer_sizes=dec_args['layer_sizes'],local=True,b_norm=dec_args['b_norm'],b_norm_finish=dec_args['b_norm_finish'],verbose=dec_args['verbose']),[-1,n_pc_points//cennum,3])
+                                +tf.reshape(decoder(feats[:,i,:],layer_sizes=dec_args['layer_sizes'],local=True,b_norm=dec_args['b_norm'],b_norm_finish=dec_args['b_norm_finish'],verbose=dec_args['verbose']),[-1,args.ptnum//cennum,3])
                         outlist.append(outi)
                 out=tf.concat(outlist,axis=1)
 
@@ -200,25 +188,23 @@ def train():
         ivar=[v for v in var if v.name.split(':')[0]=='is_training']
         saver=tf.train.Saver(var_list=myvar)
 
-        saver.restore(sess, tf.train.latest_checkpoint('./ae_files/'))
-        sess.run(tf.assign(ivar[0],False))
+        from tflearn import is_training
+        is_training(False, session=sess)
 
         mcd_list=[]
         hd_list=[]
 
-        DATA_DIR=getdata.getspdir()
-        filelist=os.listdir(DATA_DIR)
-        testfiles=getdata.getfile(os.path.join(DATA_DIR,'test_files.txt'))
+        testfiles=getdata.getfile(os.path.join(args.filepath,'test_files.txt'))
 
         for i in range(len(testfiles)):
-            testdata = getdata.load_h5(os.path.join(DATA_DIR, testfiles[i]))[:,:,:3]
+            testdata = getdata.load_h5(os.path.join(args.filepath, testfiles[i]))[:,:,:3]
             testdata=get_normal(testdata,True)
             
-            allnum=int(len(testdata)/BATCH_SIZE)*BATCH_SIZE
-            batch_num=int(allnum/BATCH_SIZE)
+            allnum=int(len(testdata)/args.batch_size)*args.batch_size
+            batch_num=int(allnum/args.batch_size)
             for batch in range(batch_num):
-                start_idx = (batch * BATCH_SIZE) % allnum
-                end_idx=(batch*BATCH_SIZE)%allnum+BATCH_SIZE
+                start_idx = (batch * args.batch_size) % allnum
+                end_idx=(batch*args.batch_size)%allnum+args.batch_size
                 batch_point=testdata[start_idx:end_idx]
                 batch_point=shuffle_points(batch_point)
                 
@@ -229,4 +215,14 @@ def train():
         print(format(mcderr,'.2f'),format(hderr,'.2f'))
         
 if __name__=='__main__':
-    train()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
+    parser.add_argument('--ptnum', type=int, default=2048, help='The number of points')
+    parser.add_argument('--bneck', type=int, default=128, help='The size of bottleneck layer in auto-encoder')
+    parser.add_argument('--filepath', type=str, default='./data', help='The path of test data')
+    parser.add_argument('--savepath', type=str, default='./modelvv_ae/', help='The path of saved checkpoint')
+    parser.add_argument('--enctype', type=str, default='pn', help='The type of encoder')
+    parser.add_argument('--dectype', type=str, default='ae', help='The type of decoder')
+
+    args=parser.parse_args()
+    evaluate(args)
