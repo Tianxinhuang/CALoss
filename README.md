@@ -1,4 +1,4 @@
-# PCLossNet
+# CALoss
 [CVPR'23] The codes for Learning to Measure the Point Cloud Reconstruction Loss in a Representation Space
 
 ## Environment
