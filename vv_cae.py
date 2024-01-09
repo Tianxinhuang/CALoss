@@ -15,7 +15,6 @@ from provider import shuffle_data,shuffle_points,rotate_point_cloud,jitter_point
 from dgcnn import dgcnn_kernel,dgcls_kernel
 import argparse
 
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
 tf.set_random_seed(1)
 
 def getidpts(pcd,ptid,ptnum):
@@ -90,7 +89,7 @@ def train(args):
     loss_e,loss_d_local=caloss(pointcloud_pl,posi_pl,out,args)
 
     allvars=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
-    trainvars=tf.GraphKeys.TRAINABLE_VARIABLES
+    trainvars=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
     
     #set the parameters for reconstruction networks and PCLossNet
     varge=[v for v in trainvars if 'ge' in v.name]
