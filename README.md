@@ -49,15 +49,20 @@ For the reconstruction task,
 Python3 vv_cae.py
 ```
 
-Note that the paths of data should be edited through the (`--filepath`) parameter according to your setting.
+Note that the paths of data should be edited through the (`--filepath`) parameter according to your setting. For example, if we use the download dataset (`./objdata/ShapeNet_part`), the training command would be
+
+```
+Python3 vv_cae.py --filepath ./objdata/ShapeNet_part
+```
 
 3. Test
 
 For the evaluation of reconstruction errors,
 ```
-Python3 vvae_eva.py
+Python3 vvae_eva.py --savepath ('weights') --filepath ('dataset')
 ```
 
 The trained weight files should be provided by the (`--savepath`) parameter to evaluate the performances.
 
 Here, we also provide [weights](https://drive.google.com/file/d/19IqJ-LV5zpVrstu2yCn-LcUnt9mLaPtq/view?usp=sharing) of the reconstruction network AE pre-trained on ShapeNet Part dataset. To evaluate its performance, just download and unzip it, then change the savepath to its folder.
+
